@@ -13,9 +13,9 @@ typedef void (^CompletePaths)();
 
 
 @interface ReverseManager()
-@property(assign)int videoNum;
-@property(strong,nonatomic)NSMutableArray *paths;
-@property(strong,nonatomic)NSFileManager *filemanager;
+@property(assign)int videoNum;//计数小视频 递归调用, 设置小视频的路径 都用到了
+@property(strong,nonatomic)NSMutableArray *paths;//放置小视频路径的数组
+@property(strong,nonatomic)NSFileManager *filemanager;//文件管理者,用来移除没用的视频
 @end
 
 @implementation ReverseManager
@@ -60,15 +60,17 @@ typedef void (^CompletePaths)();
 
 - (void)trimWithAssetPath:(NSString*)assetPath startPoint:(CMTime)startPoint
                  complete:(CompletePaths)complete{
-    
+    //从路径里获取视频资源
+
     AVAsset *asset = [AVAsset assetWithURL:[NSURL fileURLWithPath:assetPath]];
     
     AVAssetTrack *assetVideoTrack = nil;
     AVAssetTrack *assetAudioTrack = nil;
-    
+        //获取视频资源里的视频轨道
     if ([[asset tracksWithMediaType:AVMediaTypeVideo] count] != 0) {
         assetVideoTrack = [asset tracksWithMediaType:AVMediaTypeVideo][0];
     }
+        //获取视频资源里的音频轨道(不是必须的,因为我们只是逆向视频)
     if ([[asset tracksWithMediaType:AVMediaTypeAudio] count] != 0) {
         assetAudioTrack = [asset tracksWithMediaType:AVMediaTypeAudio][0];
     }
@@ -78,13 +80,13 @@ typedef void (^CompletePaths)();
     
     
     CMTime sub1Time = CMTimeSubtract(startPoint,assetTime);
-    if (CMTimeGetSeconds(sub1Time) == 0) {
+    if (CMTimeGetSeconds(sub1Time) == 0) {//此时已经完成了分割,退出递归.
         if(complete){
             complete(self.paths);
         }
         return;
     }
-    
+     //设置每段视频的长度为1秒,如果最后不足1秒了, intervalTime 就设置为余下的时间.
     CMTime  intervalTime = CMTimeMake(assetTime.timescale, assetTime.timescale);
     
     CMTime endTime = CMTimeAdd(startPoint, intervalTime);
@@ -95,19 +97,19 @@ typedef void (^CompletePaths)();
         intervalTime = CMTimeSubtract(intervalTime,subTime);
         endTime = CMTimeAdd(startPoint, intervalTime);
     }
-    
+     //相当于创建一个空的视频
     AVMutableComposition *mutableComposition = [AVMutableComposition composition];
     
     // Insert half time range of the video and audio tracks from AVAsset
     AVMutableCompositionTrack *compositionVideoTrack = [mutableComposition addMutableTrackWithMediaType:AVMediaTypeVideo preferredTrackID:kCMPersistentTrackID_Invalid];
-    
+     //开始往空的视频资源里插入我们想要时间段的视频
     [compositionVideoTrack insertTimeRange:CMTimeRangeMake(startPoint, intervalTime) ofTrack:assetVideoTrack atTime:kCMTimeZero error:&error];
     
     
     AVMutableCompositionTrack *compositionAudioTrack = [mutableComposition addMutableTrackWithMediaType:AVMediaTypeAudio preferredTrackID:kCMPersistentTrackID_Invalid];
-    
+     //开始往空的视频资源里插入我们想要时间段的音频(不是必须)
     [compositionAudioTrack insertTimeRange:CMTimeRangeMake(startPoint, intervalTime) ofTrack:assetAudioTrack atTime:kCMTimeZero error:&error];
-    
+     //设置分割完之后 小视频放置的路径
     NSString *outPath = [kVideoPath stringByAppendingPathComponent: [NSString stringWithFormat:@"%d.mp4", self.videoNum]];
     self.videoNum++;
     
@@ -130,7 +132,7 @@ typedef void (^CompletePaths)();
 //递归反转
 
 - (void)reversePathsComplete:(CompletePaths)complete{
-    if (self.videoNum == self.paths.count) {
+    if (self.videoNum == self.paths.count) {//逆向完成,退出递归.
         complete(self.paths);
         return;
     }
@@ -139,10 +141,12 @@ typedef void (^CompletePaths)();
     NSString *reversePath = [NSString stringWithFormat:@"reverse%d.mp4", self.videoNum];
     NSString *pathStr = [kVideoPath stringByAppendingPathComponent:reversePath];
     NSURL *outputUrl = [NSURL fileURLWithPath:pathStr];
+    //这个方法就是具体怎么逆向操作视频
     [self assetByReversingAsset:asset outputURL:outputUrl complete:^(AVAsset *asset) {
         NSError *error = nil;
+          //把视频逆转之后,正序的视频删除就可以了.
         [self.filemanager removeItemAtPath:self.paths[self.videoNum] error:&error];
-        
+        //把数组里正序视频的路径替换成逆序视频的路径
         [self.paths replaceObjectAtIndex:self.videoNum withObject:pathStr];
         self.videoNum++;
         [self reversePathsComplete:complete];
@@ -152,7 +156,7 @@ typedef void (^CompletePaths)();
 - (void)assetByReversingAsset:(AVAsset *)asset outputURL:(NSURL *)outputURL complete:( void (^)(AVAsset *asset))complete{
     NSError *error;
     
-    // Initialize the reader
+    // AVAssetReader 把视频资源读取出来
     AVAssetReader *reader = [[AVAssetReader alloc] initWithAsset:asset error:&error];
     AVAssetTrack *videoTrack = [[asset tracksWithMediaType:AVMediaTypeVideo] lastObject];
     
@@ -166,13 +170,13 @@ typedef void (^CompletePaths)();
     NSMutableArray *samples = [[NSMutableArray alloc] init];
     
     CMSampleBufferRef sample;
-    
+        //读取的每一帧放到数组里.
     while((sample = [readerOutput copyNextSampleBuffer])) {
         [samples addObject:(__bridge id)sample];
         CFRelease(sample);
     }
     
-    // Initialize the writer
+     // AVAssetWriter 把数组里的每一帧重组,输送到制定的沙盒文件中去
     AVAssetWriter *writer = [[AVAssetWriter alloc] initWithURL:outputURL
                                                       fileType:AVFileTypeMPEG4
                                                          error:&error];
@@ -232,20 +236,22 @@ typedef void (^CompletePaths)();
         
         videoTrack.preferredTransform = CGAffineTransformIdentity;
         
-        for (int i = 0; i < paths.count; i++) {
+        for (int i = 0; i < paths.count; i++) {//遍历数组,获取每一个视频资源
             AVURLAsset *asset = [AVURLAsset assetWithURL:[NSURL fileURLWithPath:paths[i]]];
             
             AVAssetTrack *assetVideoTrack = [[asset tracksWithMediaType:AVMediaTypeVideo]firstObject];
             
             NSError *errorVideo = nil;
-            
+             //把视频插入到新建的空视频资源里,每一次插入都是查在头部.就不用把数组逆向排列了.
             BOOL bl = [videoTrack insertTimeRange:CMTimeRangeMake(kCMTimeZero, asset.duration) ofTrack:assetVideoTrack atTime:kCMTimeZero error:&errorVideo];
             NSLog(@"errorVideo:%@--%d",errorVideo,bl);
             NSError *error = nil;
+            
+            //每拼完一个小视频就直接删除
             [self.filemanager removeItemAtPath:paths[i] error:&error];
             
         }
-        
+            //合并之后视频的输出路径
         NSURL *mergeFileURL = [NSURL fileURLWithPath:outputPath];
         
         AVAssetExportSession *exporter = [[AVAssetExportSession alloc] initWithAsset:mixComposition presetName:AVAssetExportPresetHighestQuality];
